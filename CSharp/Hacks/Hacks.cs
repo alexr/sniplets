@@ -10,7 +10,6 @@
         public static void Log(string format, params object[] args)
         {
             const string FILENAME = "TheLog.log";
-            var msg = string.Format(format, args);
             var fs = new System.IO.FileStream(FILENAME, System.IO.FileMode.Append, System.IO.FileAccess.Write, System.IO.FileShare.ReadWrite);
             using (var writer = new System.IO.StreamWriter(fs))
             {

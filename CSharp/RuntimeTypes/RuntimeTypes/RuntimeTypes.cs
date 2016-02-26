@@ -44,6 +44,7 @@
         private static AssemblyName AssemblyName;
         private static ModuleBuilder ModuleBuilder;
         private static SHA256 HashAlgorithm;
+        private static object sentinel = new object();
 
         static RuntimeTypeBuilder()
         {
@@ -110,57 +111,64 @@
                     .ComputeHash(Encoding.UTF8.GetBytes(MakeUniqueName(fields)))
                     .Select(b => b.ToString("X2", CultureInfo.InvariantCulture)));
 
-            // Check if type with this name has already been created.
-            var existingType = ModuleBuilder.GetType(className, false, false);
-            if (existingType != null)
+            // Note: When implemented as static (instead of one dynamic module per some
+            // sort of context) it is very likely that type creation will be called from
+            // more than a single thread of execution. Thus need to protect check for
+            // existing type and creation of new type with a lock to prevent race issues.
+            lock (sentinel)
             {
-                // Make sure we don't have name collision. i.e. the type definition of the
-                // new type matches definition of the existing type.
-                var newUniqueName = MakeUniqueName(fields);
-                var existingUniqueName = MakeUniqueName(existingType
-                    .GetFields()
-                    .ToDictionary(e => e.Name, e => e.FieldType));
-                if (string.Equals(newUniqueName, existingUniqueName, StringComparison.Ordinal))
+                // Check if type with this name has already been created.
+                var existingType = ModuleBuilder.GetType(className, false, false);
+                if (existingType != null)
                 {
-                    return existingType;
+                    // Make sure we don't have name collision. i.e. the type definition of the
+                    // new type matches definition of the existing type.
+                    var newUniqueName = MakeUniqueName(fields);
+                    var existingUniqueName = MakeUniqueName(existingType
+                        .GetFields()
+                        .ToDictionary(e => e.Name, e => e.FieldType));
+                    if (string.Equals(newUniqueName, existingUniqueName, StringComparison.Ordinal))
+                    {
+                        return existingType;
+                    }
+                    else
+                    {
+                        throw new InvalidOperationException(
+                            string.Format(
+                                CultureInfo.InvariantCulture,
+                                "Type name hash collision in RuntimeTypeBuilder for type definitions '{0}' and '{1}'.",
+                                existingUniqueName,
+                                newUniqueName));
+                    }
                 }
-                else
-                {
-                    throw new InvalidOperationException(
-                        string.Format(
-                            CultureInfo.InvariantCulture,
-                            "Type name hash collision in RuntimeTypeBuilder for type definitions '{0}' and '{1}'.",
-                            existingUniqueName,
-                            newUniqueName));
-                }
-            }
 
-            var typeAttributes = TypeAttributes.Public
-                | TypeAttributes.AutoLayout
-                | TypeAttributes.Sealed
-                | TypeAttributes.Serializable;
-            TypeBuilder typeBuilder = ModuleBuilder.DefineType(
-                className, typeAttributes, typeof(ValueType));
+                var typeAttributes = TypeAttributes.Public
+                    | TypeAttributes.AutoLayout
+                    | TypeAttributes.Sealed
+                    | TypeAttributes.Serializable;
+                TypeBuilder typeBuilder = ModuleBuilder.DefineType(
+                    className, typeAttributes, typeof(ValueType));
 
-            // Add  [DataContract] attribute.
-            typeBuilder.SetCustomAttribute(
-                new CustomAttributeBuilder(
-                    typeof(DataContractAttribute).GetConstructor(Type.EmptyTypes),
-                    new object[0]));
-
-            foreach (var field in fields)
-            {
-                var fieldBuilder = typeBuilder.DefineField(
-                    field.Key, field.Value, FieldAttributes.Public);
-
-                // Add [DataMember] attribute.
-                fieldBuilder.SetCustomAttribute(
+                // Add  [DataContract] attribute.
+                typeBuilder.SetCustomAttribute(
                     new CustomAttributeBuilder(
-                        typeof(DataMemberAttribute).GetConstructor(Type.EmptyTypes),
+                        typeof(DataContractAttribute).GetConstructor(Type.EmptyTypes),
                         new object[0]));
-            }
 
-            return typeBuilder.CreateType();
+                foreach (var field in fields)
+                {
+                    var fieldBuilder = typeBuilder.DefineField(
+                        field.Key, field.Value, FieldAttributes.Public);
+
+                    // Add [DataMember] attribute.
+                    fieldBuilder.SetCustomAttribute(
+                        new CustomAttributeBuilder(
+                            typeof(DataMemberAttribute).GetConstructor(Type.EmptyTypes),
+                            new object[0]));
+                }
+
+                return typeBuilder.CreateType();
+            }
         }
     }
 }
